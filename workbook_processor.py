@@ -110,9 +110,20 @@ def detect_date_columns(df, min_fraction=0.7):
     like 3-part dates. Header-name guessing is intentionally NOT used alone
     (too easy to mislabel); content is the signal.
     """
+    # Iterate positionally so duplicate header labels (common with messy
+    # sheets — two "Date" columns, or multiple blank header cells) don't
+    # cause df[col] to return a DataFrame instead of a Series, which would
+    # make the .mean() comparison ambiguous and raise. Skip duplicates
+    # entirely: downstream normalize_dates looks up by name, so an ambiguous
+    # name can't be safely targeted anyway.
     cols = []
-    for col in df.columns:
-        vals = df[col].dropna().astype(str)
+    seen = set()
+    for i, col in enumerate(df.columns):
+        if col in seen:
+            continue
+        seen.add(col)
+        series = df.iloc[:, i]
+        vals = series.dropna().astype(str)
         if len(vals) == 0:
             continue
         hits = vals.map(lambda v: bool(_DATEISH.match(v))).mean()
