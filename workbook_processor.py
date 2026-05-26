@@ -98,6 +98,52 @@ def find_table_block(grid):
 
 
 # ---------------------------------------------------------------------------
+# Header sanitization
+# ---------------------------------------------------------------------------
+def _dedupe_headers(headers):
+    """
+    Make a list of header labels unique and non-blank.
+
+    Blank/NaN labels become 'Unnamed_<i>' using their 1-based position.
+    Duplicates get a ' (2)', ' (3)', ... suffix in order of appearance.
+    Returns (new_headers, renames) where `renames` is a list of
+    (original_label, new_label, position) for anything that changed —
+    useful for surfacing in the run summary.
+    """
+    seen = {}
+    new_headers = []
+    renames = []
+    for i, raw in enumerate(headers):
+        # Treat NaN / None / empty / whitespace-only as blank.
+        if raw is None or (isinstance(raw, float) and np.isnan(raw)):
+            base = f"Unnamed_{i + 1}"
+            renames.append((raw, base, i + 1))
+        else:
+            s = str(raw).strip()
+            if s == "":
+                base = f"Unnamed_{i + 1}"
+                renames.append((raw, base, i + 1))
+            else:
+                base = s
+        count = seen.get(base, 0) + 1
+        seen[base] = count
+        if count == 1:
+            new_headers.append(base)
+        else:
+            new_label = f"{base} ({count})"
+            # If the suffixed name itself collides (rare but possible),
+            # keep bumping until unique.
+            while new_label in seen:
+                count += 1
+                new_label = f"{base} ({count})"
+            seen[base] = count
+            seen[new_label] = 1
+            new_headers.append(new_label)
+            renames.append((base, new_label, i + 1))
+    return new_headers, renames
+
+
+# ---------------------------------------------------------------------------
 # Date-column detection (conservative, content-based)
 # ---------------------------------------------------------------------------
 _DATEISH = re.compile(r"^\s*\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}\s*$")
@@ -165,6 +211,12 @@ def process_sheet(grid, sheet_name, ws=None):
     table = grid.iloc[r0:r1, c0:c1].reset_index(drop=True)
     header = table.iloc[0].tolist()
     table = table.iloc[1:].reset_index(drop=True)
+    # Messy spreadsheets routinely have blank or repeated header cells. If
+    # we hand those straight to the cleanup engine, every `df[col]` lookup
+    # on an ambiguous name returns a DataFrame instead of a Series, which
+    # breaks Series-only operations (.str, .mean comparisons, etc). Make
+    # every column label unique here, once, so downstream code can trust it.
+    header, header_renames = _dedupe_headers(header)
     table.columns = header
 
     date_cols = detect_date_columns(table)
@@ -210,10 +262,12 @@ def process_sheet(grid, sheet_name, ws=None):
         "numeric_flags": numeric_flags,
         "flags": all_flags,
         "detected_date_columns": date_cols,
+        "header_renames": header_renames,
         "block_bounds": (r0, r1, c0, c1),
         "note": (
             f"Table detected at rows {r0 + 1}-{r1}, cols {c0 + 1}-{c1}. "
-            f"{len(flagged_regions)} out-of-table region(s) flagged."
+            f"{len(flagged_regions)} out-of-table region(s) flagged. "
+            f"{len(header_renames)} header label(s) deduped/renamed."
         ),
     }
 
